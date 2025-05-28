@@ -1,17 +1,14 @@
-# =============================================================================
-# SECTION 1: Environment Setup and Imports
-# =============================================================================
 import os
-# Disable Streamlit file watching for problematic modules
+
 os.environ["STREAMLIT_WATCH_USE_POLLING"] = "true"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["STREAMLIT_SERVER_WATCH_DIRS"] = "false"
 
-# Add this at the very top of your file, before any other imports
+
 import streamlit as st
 
 import re
-import fitz  # PyMuPDF
+import fitz  
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -20,9 +17,6 @@ import torch
 import spacy
 from transformers import GPTNeoForCausalLM, GPT2Tokenizer
 
-# =============================================================================
-# SECTION 2: Session State Initialization
-# =============================================================================
 # Initialize session state for models
 if 'models_loaded' not in st.session_state:
     st.session_state.models_loaded = False
@@ -31,9 +25,6 @@ if 'faiss_store' not in st.session_state:
 if 'nlp' not in st.session_state:
     st.session_state.nlp = None
 
-# =============================================================================
-# SECTION 3: Model Loading Functions
-# =============================================================================
 # Add spaCy model loading
 def load_spacy_model(model_name="en_core_web_sm"):
     print(f"[load_spacy_model] Loading spaCy model: {model_name}")
@@ -46,10 +37,8 @@ def load_spacy_model(model_name="en_core_web_sm"):
         st.error(f"Could not load spaCy model '{model_name}'. Please ensure it is installed (`python -m spacy download {model_name}`).")
         return None
 
-# =============================================================================
-# SECTION 4: PDF Processing Functions
-# =============================================================================
-# 1. PDF Text Extraction
+
+#PDF Text Extraction
 @st.cache_data
 def extract_text(pdf_path):
     print(f"[extract_text] Processing: {pdf_path}")
@@ -69,7 +58,7 @@ def extract_text(pdf_path):
     print(f"[extract_text] Finished: {pdf_path}")
     return text_by_page
 
-# 2. Chunking & Embedding
+#Chunking & Embedding
 @st.cache_data
 def split_texts(_text_by_page, chunk_size=500, chunk_overlap=20):
     print(f"[split_texts] Splitting text into chunks...")
@@ -86,14 +75,12 @@ def split_texts(_text_by_page, chunk_size=500, chunk_overlap=20):
     print(f"[split_texts] Total chunks: {len(chunks)}")
     return chunks
 
-# =============================================================================
-# SECTION 5: FAISS Index Functions
-# =============================================================================
-# 3. FAISS Index
+
+#FAISS Index
 @st.cache_resource
 def build_or_load_faiss(chunks, _embeddings, index_path="faiss_index"):
     print(f"[build_or_load_faiss] Building or loading FAISS index...")
-    version = "v1-chunk500-miniLM"  # Current version identifier
+    version = "v1-chunk500-miniLM" 
     version_file = os.path.join(index_path, "version.txt")
     
     if os.path.exists(index_path) and os.path.exists(version_file):
@@ -103,13 +90,12 @@ def build_or_load_faiss(chunks, _embeddings, index_path="faiss_index"):
             print(f"[build_or_load_faiss] Loading existing index from {index_path}")
             return FAISS.load_local(index_path, _embeddings, allow_dangerous_deserialization=True)
     
-    # If version mismatch or index doesn't exist, create new index
+  
     print(f"[build_or_load_faiss] Creating new index...")
     texts = [chunk["text"] for chunk in chunks]
     metadatas = [{"page": chunk["page"], "pdf": chunk["pdf"]} for chunk in chunks]
     faiss_store = FAISS.from_texts(texts, _embeddings, metadatas=metadatas)
-    
-    # Save index and version
+
     os.makedirs(index_path, exist_ok=True)
     faiss_store.save_local(index_path)
     with open(version_file, 'w') as f:
@@ -117,24 +103,19 @@ def build_or_load_faiss(chunks, _embeddings, index_path="faiss_index"):
     print(f"[build_or_load_faiss] Index built and saved to {index_path}")
     return faiss_store
 
-# =============================================================================
-# SECTION 6: Model Setup
-# =============================================================================
-# 4. Model Setup
+
+# Model Setup
 @st.cache_resource
 def load_models():
     print("[load_models] Loading models...")
     try:
-        # Force CPU for all models
-        torch.set_num_threads(4)  # Limit CPU threads
-        
-        # Load the embedding model
+
+        torch.set_num_threads(4)  
+
         embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-        
-        # Load the cross-encoder for re-ranking
+
         cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu')
-        
-        # Load GPT-Neo model and tokenizer
+
         model = GPTNeoForCausalLM.from_pretrained("EleutherAI/gpt-neo-1.3B")
         tokenizer = GPT2Tokenizer.from_pretrained("EleutherAI/gpt-neo-1.3B")
         
@@ -144,15 +125,11 @@ def load_models():
         print(f"[load_models] Error loading models: {e}")
         raise e
 
-# =============================================================================
-# SECTION 7: Answer Generation Functions
-# =============================================================================
-# 6. Answer Generation
+# Answer Generation
 def generate_response(prompt: str, model, tokenizer) -> str:
     print(f"[generate_response] Generating response for prompt of length {len(prompt)}")
     
     try:
-        # Generate the text with parameters optimized for detailed answers
         gen_tokens = model.generate(
             tokenizer(prompt, return_tensors="pt").input_ids,
             do_sample=True,
@@ -165,31 +142,27 @@ def generate_response(prompt: str, model, tokenizer) -> str:
             no_repeat_ngram_size=3,
             early_stopping=True
         )
-        
-        # Decode the generated tokens
+
         gen_text = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)[0]
-        
-        # Extract just the answer part
+
         if "Answer:" in gen_text:
             answer = gen_text.split("Answer:")[-1].strip()
         else:
             answer = gen_text.strip()
-        
-        # Process the answer to ensure complete sentences and remove questions
+
         sentences = answer.split('.')
         complete_sentences = []
         
         for sentence in sentences:
             sentence = sentence.strip()
-            if sentence:  # Only process non-empty sentences
-                # Skip sentences that end with question marks
+            if sentence: 
                 if sentence.endswith('?'):
                     continue
-                # Check if the sentence is complete (has a subject and verb)
-                if len(sentence.split()) >= 3:  # Basic check for sentence completeness
+
+                if len(sentence.split()) >= 3:  
                     complete_sentences.append(sentence)
         
-        # Join the complete sentences
+
         if complete_sentences:
             answer = '. '.join(complete_sentences) + '.'
         else:
@@ -201,11 +174,10 @@ def generate_response(prompt: str, model, tokenizer) -> str:
         print(f"[generate_response] Error generating response: {e}")
         return "I don't know."
 
-# 8. Question Answering Pipeline
+
 def answer_query(query, faiss_store, embedding_model, cross_encoder, model, tokenizer, nlp, k=5, distance_threshold=0.9):
     print(f"\n[answer_query] Starting query processing for: {query}")
     try:
-        # Perform the search and get scores
         docs_and_scores = faiss_store.similarity_search_with_score(query, k=k)
 
         if not docs_and_scores:
@@ -218,21 +190,18 @@ def answer_query(query, faiss_store, embedding_model, cross_encoder, model, toke
             pdf_name = doc.metadata.get('pdf', 'N/A')
             print(f"  Doc {i}: score={score:.4f}, page={page_num}, pdf={pdf_name}")
 
-        # Check if the most relevant document's score is above the threshold
         best_score = docs_and_scores[0][1]
         if best_score > distance_threshold:
             print(f"[answer_query] Best score {best_score:.4f} is above threshold {distance_threshold}. Query likely off-topic.")
-            return "I can only answer questions based on the provided anatomy PDF documents. Your question seems unrelated to their content.", []
+            return "I can only answer questions based on the provided PDF documents. Your question seems unrelated to their content.", []
 
-        # Use documents that were initially retrieved if the best one passed the initial check
         docs = [doc for doc, score in docs_and_scores]
 
-        # Extract the relevant context from the documents
         context = " ".join([doc.page_content for doc in docs])
         
-        # Determine if we have enough context for a detailed answer
+
         context_length = len(context.split())
-        is_detailed = context_length > 200  # Adjust this threshold as needed
+        is_detailed = context_length > 200 
 
         # Construct the prompt based on available context
         if is_detailed:
@@ -271,16 +240,13 @@ def answer_query(query, faiss_store, embedding_model, cross_encoder, model, toke
         traceback.print_exc()
         return "An error occurred while trying to answer your question. Please try again.", []
 
-# =============================================================================
-# SECTION 8: Streamlit UI and Main Execution
-# =============================================================================
-# 9. Streamlit UI
+
+# Streamlit UI
 def main():
     print("[main] Starting Streamlit app...")
-    st.title("Book Q&A Bot")
+    st.title("Ask your question")
     data_dir = "data"
 
-    # Initialize models and data if not already loaded
     if not st.session_state.models_loaded:
         with st.spinner("Loading models and data..."):
             # Load spaCy model
@@ -351,5 +317,5 @@ if __name__ == "__main__":
     print("[__main__] Running main()")
     main()
 
-
+#python -m streamlit run job.py
 
